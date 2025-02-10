@@ -3,14 +3,34 @@ class Paddle:
 		self.canvas = canvas
 		self.width = 10
 		self.height = 100
+		self.x = x
+		self.y = y
+		self.starty = y
+		self.startx = x
 		self.paddle = self.canvas.create_rectangle(x - self.width/2, y - self.height/2, x + self.width/2, y + self.height/2, fill=color)
 
+	def move_up(self):
+		if self.y - self.height / 2 - 10 >= 0:
+			self.y -= 10
+			self.canvas.move(self.paddle, 0, -10)
+
+	def move_down(self):
+		if self.y + self.height / 2 + 10 <= 600:
+			self.y += 10
+			self.canvas.move(self.paddle, 0, 10)
+
 	def move(self, dx, dy):
+		self.x += dx
+		self.y += dy
 		self.canvas.move(self.paddle, dx, dy)
+
+	def reset(self):
+		self.x = self.startx
+		self.y = self.starty
+		self.canvas.coords(self.paddle, self.x - self.width/2, self.y - self.height/2, self.x + self.width/2, self.y + self.height/2)
 
 	def get_coords(self):
 		return self.canvas.coords(self.paddle)
 
 	def get_center(self):
-		coords = self.get_coords()
-		return coords[0] + self.width / 2, coords[1] + self.height / 2
+		return self.x, self.y
