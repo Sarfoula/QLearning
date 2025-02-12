@@ -20,12 +20,6 @@ class Ball:
 		self.y += self.vy
 		self.canvas.move(self.ball_id, self.vx, self.vy)
 
-	def bounce_x(self):
-		self.vx = -self.vx
-
-	def bounce_y(self):
-		self.vy = -self.vy
-
 	def get_center(self):
 		return self.x, self.y
 
@@ -35,8 +29,4 @@ class Ball:
 	def reset(self):
 		self.x = 400
 		self.y = 300
-		self.dx = -0.9
-		self.dy = 0.1
-		self.vx = self.dx * self.speed
-		self.vy = self.dy * self.speed
 		self.canvas.coords(self.ball_id, 380, 280, 400, 300)
