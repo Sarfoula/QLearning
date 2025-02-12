@@ -13,7 +13,7 @@ class DeepQNetwork(nn.Module):
 
 		self.optimizer = optim.Adam(self.parameters(), lr=lr)
 		self.loss = nn.SmoothL1Loss() # Can use Huber loss ?
-		self.device = T.device('cuda' if T.cuda.is_available() else 'cpu')
+		self.device = T.device('cpu')
 		self.to(self.device)
 
 	def forward(self, state):
@@ -60,8 +60,8 @@ class Agent():
 	def choose_action(self, state):
 		if np.random.random() > self.epsilon:
 			state = T.tensor(state, dtype=T.float).to(self.Q_eval.device)
-			actions = self.Q_eval(state)
-			action = T.argmax(actions).item()
+			Qvalues = self.Q_eval(state)
+			action = T.argmax(Qvalues).item()
 		else:
 			action = np.random.choice(self.n_actions)
 

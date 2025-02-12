@@ -40,6 +40,3 @@ class Paddle:
 
 	def get_center(self):
 		return self.x, self.y
-
-	def get_state(self, ball, opponent):
-		return np.array([ball.x, ball.y, ball.dx, ball.dy, self.y, opponent.y])
