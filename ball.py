@@ -29,4 +29,6 @@ class Ball:
 	def reset(self):
 		self.x = 400
 		self.y = 300
+		self.vx = self.dx * self.speed
+		self.vy = self.dy * self.speed
 		self.canvas.coords(self.ball_id, 380, 280, 400, 300)

@@ -1,6 +1,7 @@
 class Paddle:
 	def __init__(self, canvas, x, y, color):
 		self.canvas = canvas
+		self.ball_hit = False
 		self.width = 10
 		self.height = 100
 		self.x = x
@@ -26,12 +27,10 @@ class Paddle:
 		self.canvas.move(self.paddle, 0, movement)
 
 	def move(self, dx, dy):
-		self.x += dx
 		self.y += dy
 		self.canvas.move(self.paddle, dx, dy)
 
 	def reset(self):
-		self.x = self.startx
 		self.y = self.starty
 		self.canvas.coords(self.paddle, self.x - self.width/2, self.y - self.height/2, self.x + self.width/2, self.y + self.height/2)
 
@@ -40,6 +39,3 @@ class Paddle:
 
 	def get_center(self):
 		return self.x, self.y
-
-	def get_state(self, ball, opponent):
-		return np.array([ball.x, ball.y, ball.dx, ball.dy, self.y, opponent.y])
