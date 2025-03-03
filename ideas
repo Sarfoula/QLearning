@@ -1,8 +1,0 @@
-Change the neural network:
-	- LSTM / GRU ?? (predict a serie of action not just one)
-  - A memory for the last action taken since the last state
-
-    or
-
-Add an output value for the time:
-  - output = [action, time]

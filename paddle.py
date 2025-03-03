@@ -11,16 +11,16 @@ class Paddle:
 		self.paddle = self.canvas.create_rectangle(x - self.width/2, y - self.height/2, x + self.width/2, y + self.height/2, fill=color)
 
 	def move_up(self):
-		if self.y - self.height / 2 - 20 >= 0:
-			movement = 20
+		if self.y - self.height / 2 - 10 >= 0:
+			movement = 10
 		else:
 			movement = self.y - self.height / 2
 		self.y -= movement
 		self.canvas.move(self.paddle, 0, -movement)
 
 	def move_down(self):
-		if self.y + self.height / 2 + 20 <= 600:
-			movement = 20
+		if self.y + self.height / 2 + 10 <= 600:
+			movement = 10
 		else:
 			movement = 600 - (self.y + self.height / 2)
 		self.y += movement

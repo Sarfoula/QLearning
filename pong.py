@@ -2,7 +2,7 @@ import tkinter as tk
 import numpy as np
 from ball import Ball
 from paddle import Paddle
-from DeepQlearning import Agent
+from agent import Agent
 from utils import show_result
 
 class Game:
@@ -10,15 +10,17 @@ class Game:
 		self.winner = 0
 		self.hit = 0
 
+		self.sequence = []
+		self.next_sequence = []
 		self.root = tk.Tk()
 		self.width = width
 		self.height = height
-		self.agent = Agent(gamma=0.99, batch_size=64, n_actions=3, input_dims=6, lr=0.00025, reward_factor=0.01, tau=1000)
+		self.agent = Agent(gamma=0.99, batch_size=64, n_actions=3, input_dims=5, lr=0.00025, tau=1000)
 		self.root.title("Jeu Pong")
 
 		self.canvas = tk.Canvas(self.root, width=width, height=height, bg="black")
 		self.canvas.pack()
-		self.ball = Ball(self.canvas, x=width/2, y=height/2, dx=-0.9, dy=0.1, radius=10, speed=30, color="white")
+		self.ball = Ball(self.canvas, x=width/2, y=height/2, dx=-0.9, dy=0.1, radius=10, speed=10, color="white")
 		self.paddle_left = Paddle(self.canvas, 50, height/2, color="red")
 		self.paddle_right = Paddle(self.canvas, width - 50, height/2, color="blue")
 
@@ -103,8 +105,8 @@ class Game:
 			self.winner = 2
 			print("Left Paddle won")
 
-	def get_state(self, paddle, opponent):
-		return np.array([abs(paddle.x - self.ball.x), self.ball.y, self.ball.dx, self.ball.dy, paddle.y, opponent.y])
+	def get_state(self, paddle):
+		return np.array([self.ball.x, self.ball.y, self.ball.dx, self.ball.dy, paddle.y])
 
 	def step(self, left, right):
 		self.ball.move()
@@ -115,14 +117,9 @@ class Game:
 		self.check_collision_with_paddle(self.ball, self.paddle_left)
 		self.check_collision_with_paddle(self.ball, self.paddle_right)
 
-		ball_hit = self.paddle_left.ball_hit or self.paddle_right.ball_hit
-		if ball_hit:
-			self.paddle_left.ball_hit = False
-			self.paddle_right.ball_hit = False
-
 		if self.winner != 0:
-			return True, ball_hit
-		return False, ball_hit
+			return True
+		return False
 
 	def get_reward(self, paddle, opponent):
 		ball_center = self.ball.get_center()
@@ -150,6 +147,7 @@ class Game:
 		return reward
 
 	def game_train(self, num_games=100):
+		count = 0
 		scores = []
 		paddle = self.paddle_left
 		opponent = self.paddle_right
@@ -157,31 +155,34 @@ class Game:
 		for i in range(num_games):
 			done = False
 			self.reset(paddle)
-			state = self.get_state(paddle, opponent)
+			state = self.get_state(paddle)
+			old_state = None
 			score = 0
 			print('episode', i)
 			while not done:
-				action_left = self.agent.choose_action(state)
+				action_left = self.agent.choose_action()
 				action_right = self.simpleOpponent(opponent)
 
-				done, ball_hit = self.step(action_left, action_right)
-				new_state = self.get_state(paddle, opponent)
-				reward_left = self.get_reward(paddle, opponent)
+				done = self.step(action_left, action_right)
+				state = self.get_state(paddle)
+				reward = self.get_reward(paddle, opponent)
+				score += reward
 
-				score += reward_left
-
-				self.agent.replayBuffer.store_transition(state, action_left, reward_left, new_state, done, ball_hit)
-				self.agent.learn()
-				state = new_state
+				if count % 60 == 0:
+					self.agent.replay_buffer.store_transition(state, action_left, reward, old_state, done)
+					self.agent.learn()
+					old_state = state
+				count += 1
 			self.agent.epsilon = self.agent.epsilon - 0.001 if self.agent.epsilon > 0.01 else 0.01
 			scores.append(score)
 			avg_score = np.mean(scores)
 			print('score %.2f' % score, 'average %.2f' % avg_score, 'hit', self.hit)
+		self.agent.save_model()
 		show_result(scores, num_games)
 
 	def game_loop(self):
 		# get an action for AI
-		left_action = self.agent.choose_action(self.get_state(self.paddle_left, self.paddle_right))
+		left_action = self.agent.choose_action()
 		# left_action = self.simpleOpponent(self.paddle_left)
 		right_action = self.move_paddle_key(self.paddle_right)
 
@@ -193,7 +194,7 @@ class Game:
 			print(reward)
 		if self.winner != 0:
 			self.reset(self.paddle_left)
-		self.root.after(50, self.game_loop)
+		self.root.after(17, self.game_loop)
 
 if __name__ == "__main__":
 	game = Game(600, 800)
