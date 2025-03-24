@@ -1,8 +1,0 @@
-PER
-DDQN
-Ajouter contrainte de temps
-
-Pour la contrainte du temps pour l'etat il y a plusieurs solution
-  Utiliser un RNN(LSTM/GRU)
-
-Utiliser un reseaux qui apprend a prevoir l'etat du jeu et donc peut envoyer a l'autre agent (un vrai truc de fdp)
