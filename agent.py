@@ -105,7 +105,7 @@ class DeepQNetwork(nn.Module):
 		self.fc2 = nn.Linear(fc1_dims, fc2_dims)
 		self.fc3 = nn.Linear(fc2_dims, output_dim)
 
-		self.loss = nn.SmoothL1Loss(reduction=None)
+		self.loss = nn.SmoothL1Loss(reduction='none')
 		self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
 	def forward(self, state):
