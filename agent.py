@@ -100,18 +100,19 @@ class ReplayBuffer:
 
 class DeepQNetwork(nn.Module):
 	def __init__(self, input_dim, output_dim, lr, fc1_dims=64, fc2_dims=64):
-		super(DeepQNetwork, self).__init__()
-		self.fc1 = nn.Linear(input_dim, fc1_dims)
-		self.fc2 = nn.Linear(fc1_dims, fc2_dims)
-		self.fc3 = nn.Linear(fc2_dims, output_dim)
+		super().__init__()
+		self.network = nn.Sequential(
+		nn.Linear(input_dim, fc1_dims),
+		nn.ReLU(),
+		nn.Linear(fc1_dims, fc2_dims),
+		nn.ReLU(),
+		nn.Linear(fc2_dims, output_dim))
 
 		self.loss = nn.SmoothL1Loss(reduction='none')
 		self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
 	def forward(self, state):
-		x = T.relu(self.fc1(state))
-		x = T.relu(self.fc2(x))
-		return self.fc3(x)
+		return self.network(state)
 
 class Agent():
 	def __init__(self, input_dim, output_dim, batch_size=64):

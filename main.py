@@ -118,7 +118,7 @@ if __name__ == "__main__":
 	signal.signal(signal.SIGINT, stop)
 	signal.signal(signal.SIGTERM, stop)
 
-	delay = 20
+	delay = 30
 	episodes = 5000
 
 	game = trainGame(600, 800, visual=False, delay=delay, stop=50)
