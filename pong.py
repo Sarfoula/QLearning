@@ -1,4 +1,5 @@
 import tkinter as tk
+import random
 
 class Ball:
 	def __init__(self, visual, canvas, x, y, speed=10, dx=1, dy=0, radius=10, color="white"):
@@ -130,6 +131,8 @@ class Game:
 			paddle.move_down()
 
 	def opponent(self, paddle):
+		if self.ball.dx < 0:
+			return 2
 		if self.ball.y < paddle.y:
 			return 0
 		elif self.ball.y > paddle.y:
@@ -151,7 +154,10 @@ class Game:
 		bx1, by1, bx2, by2 = ball.get_coords()
 
 		if bx2 >= px1 and bx1 <= px2 and by2 >= py1 and by1 <= py2:
-			angle = (by - py) / (py2 - py1)
+			# angle = (by - py) / (py2 - py1)
+			angle = random.uniform(-0.6, 0.6)
+			# random_factor = random.uniform(0.8, 1.2)
+			# angle *= random_factor
 			if px < self.width / 2:
 				ball.dx = 1 - abs(angle)
 			else:
@@ -178,12 +184,6 @@ class Game:
 			self.winner = 2
 			print("DROITE won")
 
-	def get_state(self):
-		"""return paddle_y, opponent_y, ball_x, ball_y, ball_vx, ball_vy"""
-		return (self.paddle_left.y/self.height, self.paddle_right.y/self.height,
-				self.ball.x/self.width, self.ball.y/self.height,
-				self.ball.vx/self.ballspeed, self.ball.vy/self.ballspeed)
-
 	def step(self, left_action, right_action):
 		self.ball.move()
 		self.move_paddle(self.paddle_left, left_action)
@@ -198,16 +198,11 @@ class Game:
 		return False
 
 	def game_loop(self):
-		left_action = self.simpleOpponent(self.paddle_left)
-		right_action = self.get_key_action()
+		right_action = self.opponent(self.paddle_right)
+		left_action = self.get_key_action()
 
 		self.step(left_action, right_action)
 
 		if self.winner != 0:
 			self.reset()
 		self.root.after(17, self.game_loop)
-
-if __name__ == "__main__":
-	game = Game(600, 800, visual=True)
-	game.game_loop()
-	game.root.mainloop()
