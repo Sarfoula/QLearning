@@ -28,22 +28,21 @@ class trainGame(Game):
 		if self.ball_hit:
 			self.ball_hit = False
 			reward = 1
+
 		if self.winner == 2:
 			dist = abs((self.ball.y - self.paddle_left.y) / self.height)
 			self.distance_error.append(dist)
 			reward = -dist
-		elif self.winner == 1:
-			reward = 1
 		return reward
 
 	def get_state(self):
 		"""return paddle_y, ball_x, ball_y, ball_vx, ball_vy, timer"""
-		return (self.paddle_left.y/self.height,
+		return np.array([self.paddle_left.y/self.height,
 				self.ball.x/self.width,
 				self.ball.y/self.height,
 				self.ball.vx/self.ballspeed,
 				self.ball.vy/self.ballspeed,
-				self.frame % self.delay)
+				self.frame % self.delay], dtype=np.float32)
 
 	def training(self, num_games=500):
 		for i in range(num_games):
@@ -70,7 +69,7 @@ class trainGame(Game):
 				if self.frame % self.delay == 0 or terminal:
 					new_state = self.get_state()
 				else:
-					new_state = state
+					new_state = state.copy()
 					new_state[5] == self.frame % self.delay
 
 				self.agent.replay_buffer.store_transition(state, left_action, reward, new_state, terminal)
@@ -96,18 +95,24 @@ class trainGame(Game):
 
 			if self.agent.epsilon == self.agent.epsilon_min and self.epsilon_update == 0:
 				self.epsilon_update = i
-			print(f'episode {i}, mean reward {np.mean(self.reward_episode):.2f}, agent hit {self.paddle_left.hit}')
+			print(f'episode {i}, mean reward {np.mean(self.reward_episode):.2f}, mean hit {self.paddle_left.hit}')
 			print(f'epsilon {self.agent.epsilon:.3f}\n')
 
 	def play(self):
-		left_action = self.agent.choose_action(self.get_state())
+		left_action = self.agent.real_choose(self.state)
 		right_action = self.get_key_action()
 
 		self.step(left_action, right_action)
 		self.frame += 1
 
+		if self.frame % self.delay == 0:
+			self.state = self.get_state()
+		else:
+			self.state[5] += 1
+
 		if self.winner != 0:
 			self.reset()
+			self.state = self.get_state()
 		self.root.after(17, self.play)
 
 if __name__ == "__main__":
@@ -118,14 +123,12 @@ if __name__ == "__main__":
 	signal.signal(signal.SIGINT, stop)
 	signal.signal(signal.SIGTERM, stop)
 
-	delay = 30
+	delay = 60
 	episodes = 5000
 
-	game = trainGame(600, 800, visual=False, delay=delay, stop=50)
+	game = trainGame(600, 800, visual=None, delay=delay, stop=10)
+	name = "origin"
 	game.training(episodes)
-
-	name = "PER_newResult"
-	game.agent.save_model(name + ".pth")
 	show_result(game.reward_episode,
 			 game.ball_hit_episode,
 			 game.distance_error,

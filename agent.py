@@ -30,8 +30,7 @@ class SumTree:
 	def sample(self, s):
 		idx = 0
 		while idx < self.capacity - 1:
-			left = 2 * idx + 1
-			right = left + 1
+			left, right = 2 * idx + 1, 2 * idx + 2
 			if s <= self.tree[left]:
 				idx = left
 			else:
@@ -58,17 +57,13 @@ class ReplayBuffer:
 		self.tree.add(priority, (state, action, reward, next_state, done))
 
 	def sample(self):
-		batch_indices = []
-		batch_transitions = []
-		batch_weigths = []
+		batch_indices, batch_transitions, batch_weigths = [], [], []
 
 		segment = self.tree.total_priority() / self.batch_size
 		self.beta = min(1.0, self.beta + self.bet_incr)
 
 		for i in range(self.batch_size):
-			a = segment * i
-			b = segment * (i + 1)
-
+			a, b = segment * i, segment * (i + 1)
 			s = random.uniform(a, b)
 			idx, p, data = self.tree.sample(s)
 
@@ -79,16 +74,16 @@ class ReplayBuffer:
 			batch_transitions.append(data)
 			batch_weigths.append(weight)
 
-		batch_weigths = batch_weigths / np.max(batch_weigths)
+		batch_weigths = np.array(batch_weigths) / np.max(batch_weigths)
 
 		states, actions, rewards, next_states, dones = zip(*batch_transitions)
 
-		states = T.FloatTensor(states)
-		next_states = T.FloatTensor(next_states)
-		actions = T.LongTensor(actions).unsqueeze(1)
-		rewards = T.FloatTensor(rewards)
-		dones = T.FloatTensor(dones)
-		weights = T.FloatTensor(batch_weigths)
+		states = T.tensor(np.array(states), dtype=T.float32)
+		next_states = T.tensor(np.array(next_states), dtype=T.float32)
+		actions = T.tensor(actions, dtype=T.long).unsqueeze(1)
+		rewards = T.tensor(rewards, dtype=T.float32)
+		dones = T.tensor(dones, dtype=T.float32)
+		weights = T.tensor(batch_weigths, dtype=T.float32)
 
 		return states, actions, rewards, next_states, dones, batch_indices, weights
 
@@ -121,7 +116,7 @@ class Agent():
 
 		self.lr = 0.00025
 		# Number of step for update target network
-		self.tau = 500
+		self.tau = 1000
 		self.step_counter = 0
 
 		# epsilon greedy policy for exploration, decrease over time by deacay_rate and never goes below min
@@ -130,13 +125,16 @@ class Agent():
 		self.decay_rate = 0.99997
 
 		# Size for batch sample to learn from
-		self.replay_buffer = ReplayBuffer(50000, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
+		self.replay_buffer = ReplayBuffer(100000, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
 
 		# 2 neural network for the actual policy and for the target
 		self.policy = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target.load_state_dict(self.policy.state_dict())
 		self.target.eval()
+
+	def real_choose(self, state):
+		return T.argmax(self.policy.forward(T.tensor(state, dtype=T.float32))).item()
 
 	def epsilon_decay(self):
 		"""Decrease the epsilon exponentioly by a certain decay rate"""
@@ -162,24 +160,24 @@ class Agent():
 
 		# Get q_value for state with the action choosen
 		q_values = self.policy(states)
-		q_value = T.gather(q_values, 1, actions).squeeze(1)
+		q_value = q_values.gather(1, actions).squeeze(1)
 
 		# Get best next_q_value for next_state with best next_action
-		next_max_action = T.argmax(self.policy(new_states), 1, True)
-		max_next_q_value = T.gather(self.target(new_states), 1, next_max_action).squeeze(1)
-
-		# Bellman equation gives use the target q_value (the ideal q_value)
-		q_target = rewards + self.gamma * max_next_q_value * (1 - terminals)
+		with T.no_grad():
+			next_max_action = self.policy(new_states).argmax(1, keepdim=True)
+			max_next_q_value = self.target(new_states).gather(1, next_max_action).squeeze(1)
+			# Bellman equation gives use the target q_value (the ideal q_value)
+			q_target = rewards + self.gamma * max_next_q_value * (1 - terminals)
 
 		# The loss function is a difference between q_value and the q_target
-		loss = self.policy.loss(q_value, q_target) * weights
+		loss = (self.policy.loss(q_value, q_target) * weights).mean()
 
-		td_errors = T.abs(q_value - q_target)
-		self.replay_buffer.update_priorities(batch_indices, td_errors.detach().numpy())
+		td_errors = T.abs(q_value - q_target).detach().numpy()
+		self.replay_buffer.update_priorities(batch_indices, td_errors)
 
 		# Change the weight in the neural network to fit the q_target
 		self.policy.optimizer.zero_grad()
-		loss.mean().backward()
+		loss.backward()
 		self.policy.optimizer.step()
 
 		# Update the target network every tau step
@@ -188,8 +186,11 @@ class Agent():
 			self.target.load_state_dict(self.policy.state_dict())
 
 	def save_model(self, path):
-		T.save(self.policy.state_dict(), path)
+		T.save({'model_state_dict': self.policy.state_dict(),
+		  'optimizer_state_dict': self.policy.optimizer.state_dict()}, path)
 
 	def load_model(self, path):
-		self.policy.load_state_dict(T.load(path))
-		self.target.load_state_dict(self.policy.state_dict())
+		checkpoint = T.load(path)
+		self.policy.load_state_dict(checkpoint['model_state_dict'])
+		self.policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+		self.policy.eval()
