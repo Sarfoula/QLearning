@@ -111,23 +111,18 @@ class DeepQNetwork(nn.Module):
 
 class Agent():
 	def __init__(self, input_dim, output_dim, batch_size=64):
-		# discount factor for the Bellman equation
 		self.gamma = 0.99
 
 		self.lr = 0.00025
-		# Number of step for update target network
 		self.tau = 1000
 		self.step_counter = 0
 
-		# epsilon greedy policy for exploration, decrease over time by deacay_rate and never goes below min
 		self.epsilon = 1
 		self.epsilon_min = 0.001
 		self.decay_rate = 0.99997
 
-		# Size for batch sample to learn from
 		self.replay_buffer = ReplayBuffer(100000, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
 
-		# 2 neural network for the actual policy and for the target
 		self.policy = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target.load_state_dict(self.policy.state_dict())
@@ -137,11 +132,9 @@ class Agent():
 		return T.argmax(self.policy.forward(T.tensor(state, dtype=T.float32))).item()
 
 	def epsilon_decay(self):
-		"""Decrease the epsilon exponentioly by a certain decay rate"""
 		self.epsilon = max(self.epsilon_min, self.epsilon * self.decay_rate)
 
 	def choose_action(self, state):
-		"""Choose action with epsilon greedy"""
 		if random.random() < self.epsilon:
 			action = random.randint(0, 2)
 		else:
@@ -151,36 +144,28 @@ class Agent():
 		return action
 
 	def learn(self):
-		"""Make the agent learn from a batch_size experience"""
 		if self.replay_buffer.tree.size < self.replay_buffer.batch_size:
 			return
 
-		# Gives a random batch transition
 		states, actions, rewards, new_states, terminals, batch_indices, weights = self.replay_buffer.sample()
 
-		# Get q_value for state with the action choosen
 		q_values = self.policy(states)
 		q_value = q_values.gather(1, actions).squeeze(1)
 
-		# Get best next_q_value for next_state with best next_action
 		with T.no_grad():
 			next_max_action = self.policy(new_states).argmax(1, keepdim=True)
 			max_next_q_value = self.target(new_states).gather(1, next_max_action).squeeze(1)
-			# Bellman equation gives use the target q_value (the ideal q_value)
 			q_target = rewards + self.gamma * max_next_q_value * (1 - terminals)
 
-		# The loss function is a difference between q_value and the q_target
 		loss = (self.policy.loss(q_value, q_target) * weights).mean()
 
 		td_errors = T.abs(q_value - q_target).detach().numpy()
 		self.replay_buffer.update_priorities(batch_indices, td_errors)
 
-		# Change the weight in the neural network to fit the q_target
 		self.policy.optimizer.zero_grad()
 		loss.backward()
 		self.policy.optimizer.step()
 
-		# Update the target network every tau step
 		self.step_counter += 1
 		if self.step_counter % self.tau == 0:
 			self.target.load_state_dict(self.policy.state_dict())
