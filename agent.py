@@ -1,6 +1,8 @@
 import torch as T
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.utils as utils
+import torch.nn.functional as F
 import numpy as np
 import random
 
@@ -31,7 +33,12 @@ class SumTree:
 		idx = 0
 		while idx < self.capacity - 1:
 			left, right = 2 * idx + 1, 2 * idx + 2
-			if s <= self.tree[left]:
+
+			if self.tree[left] <= 0:
+				idx = right
+			elif self.tree[right] <= 0:
+				idx = left
+			elif s <= self.tree[left]:
 				idx = left
 			else:
 				s -= self.tree[left]
@@ -89,58 +96,62 @@ class ReplayBuffer:
 
 	def update_priorities(self, batch_indices, batch_priorities):
 		for idx, priority in zip(batch_indices, batch_priorities):
-			safe_priority = max(priority + self.epsilon, self.epsilon)
-			self.tree.update(idx, safe_priority)
-			self.max_priority = max(self.max_priority, safe_priority)
+			priority = (abs(priority) + self.epsilon) ** self.alpha
+			self.tree.update(idx, priority)
+			self.max_priority = max(self.max_priority, priority)
 
-class DeepQNetwork(nn.Module):
+class DuelingDeepQNetwork(nn.Module):
 	def __init__(self, input_dim, output_dim, lr, fc1_dims=64, fc2_dims=64):
 		super().__init__()
-		self.network = nn.Sequential(
-		nn.Linear(input_dim, fc1_dims),
-		nn.ReLU(),
-		nn.Linear(fc1_dims, fc2_dims),
-		nn.ReLU(),
-		nn.Linear(fc2_dims, output_dim))
+		self.fc1 = nn.Linear(input_dim, fc1_dims)
+		self.fc2 = nn.Linear(fc1_dims, fc2_dims)
+
+		self.value_stream = nn.Linear(fc2_dims, 1)
+
+		self.advantage_stream = nn.Linear(fc2_dims, output_dim)
 
 		self.loss = nn.SmoothL1Loss(reduction='none')
 		self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
 	def forward(self, state):
-		return self.network(state)
+		x = F.relu(self.fc1(state))
+		x = F.relu(self.fc2(x))
+
+		value = self.value_stream(x)
+		advantages = self.advantage_stream(x)
+
+		q_values = value + (advantages - advantages.mean(dim=1, keepdim=True))
+		return q_values
 
 class Agent():
-	def __init__(self, input_dim, output_dim, batch_size=64):
-		self.gamma = 0.99
+	def __init__(self, input_dim, output_dim, batch_size=64, capacity=500000):
 
-		self.lr = 0.00025
-		self.tau = 1000
+		self.gamma = 0.99
+		self.lr = 0.0003
+		self.tau = 0.005
 		self.step_counter = 0
 
-		self.epsilon = 1
-		self.epsilon_min = 0.001
-		self.decay_rate = 0.99997
+		self.epsilon = 1.0
+		self.epsilon_min = 0.1
+		self.epsilon_decay_episode = 300
+		self.decay_rate = (self.epsilon - self.epsilon_min) / self.epsilon_decay_episode
 
-		self.replay_buffer = ReplayBuffer(100000, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
-
-		self.policy = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
-		self.target = DeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
+		self.replay_buffer = ReplayBuffer(capacity, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
+		self.policy = DuelingDeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
+		self.target = DuelingDeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target.load_state_dict(self.policy.state_dict())
 		self.target.eval()
 
-	def real_choose(self, state):
-		return T.argmax(self.policy.forward(T.tensor(state, dtype=T.float32))).item()
-
 	def epsilon_decay(self):
-		self.epsilon = max(self.epsilon_min, self.epsilon * self.decay_rate)
+		self.epsilon = max(self.epsilon_min, self.epsilon - self.decay_rate)
 
 	def choose_action(self, state):
 		if random.random() < self.epsilon:
 			action = random.randint(0, 2)
 		else:
 			with T.no_grad():
-				action = T.argmax(self.policy.forward(T.FloatTensor(state))).item()
-		self.epsilon_decay()
+				tensor = T.tensor(state, dtype=T.float32).unsqueeze(0)
+				action = T.argmax(self.policy.forward(tensor)).item()
 		return action
 
 	def learn(self):
@@ -164,18 +175,23 @@ class Agent():
 
 		self.policy.optimizer.zero_grad()
 		loss.backward()
+		utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
 		self.policy.optimizer.step()
 
 		self.step_counter += 1
-		if self.step_counter % self.tau == 0:
-			self.target.load_state_dict(self.policy.state_dict())
+		for target_param, policy_param in zip(self.target.parameters(), self.policy.parameters()):
+			target_param.data.copy_(self.tau * policy_param.data + (1.0 - self.tau) * target_param.data)
+		return loss.item()
 
 	def save_model(self, path):
 		T.save({'model_state_dict': self.policy.state_dict(),
-		  'optimizer_state_dict': self.policy.optimizer.state_dict()}, path)
+			'target_state_dict': self.target.state_dict(),
+			'optimizer_state_dict': self.policy.optimizer.state_dict(),
+			'epsilon': self.epsilon}, path)
 
 	def load_model(self, path):
-		checkpoint = T.load(path)
+		checkpoint = T.load(path, weights_only=False)
 		self.policy.load_state_dict(checkpoint['model_state_dict'])
+		self.target.load_state_dict(checkpoint['target_state_dict'])
 		self.policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-		self.policy.eval()
+		self.epsilon = checkpoint['epsilon']

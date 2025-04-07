@@ -1,5 +1,5 @@
 import tkinter as tk
-import random
+import math
 
 class Ball:
 	def __init__(self, visual, canvas, x, y, speed=10, dx=1, dy=0, radius=10, color="white"):
@@ -38,7 +38,8 @@ class Ball:
 		self.x = self.start[0]
 		self.y = self.start[1]
 		if self.visual:
-			self.canvas.coords(self.ball_id, 380, 280, 400, 300)
+			self.canvas.coords(self.ball_id, self.x - self.radius, self.y - self.radius,
+					  self.x + self.radius, self.y + self.radius)
 
 class Paddle:
 	def __init__(self, visual, canvas, x, y, color, width=10, height=100):
@@ -85,7 +86,7 @@ class Paddle:
 		if self.visual:
 			return self.canvas.coords(self.paddle)
 		else:
-			return self.x - self.width / 2, self.y - self.height / 2, self.x + self.width / 2, self.y + self.height
+			return self.x - self.width/2, self.y - self.height/2, self.x + self.width/2, self.y + self.height/2
 
 	def get_center(self):
 		return self.x, self.y
@@ -151,36 +152,42 @@ class Game:
 		reward = 0
 		if self.paddle_left.hit:
 			self.paddle_left.hit = False
-			reward = 1
+			reward += 1.0
 
 		if self.winner == 2:
-			dist = abs((self.ball.y - self.paddle_left.y) / self.height)
-			reward = -dist
+			reward = -1.0
+
 		return reward
 
 	def reset(self):
 		self.winner = 0
 		self.ball.reset()
-		self.ball_hit = False
 		self.paddle_right.reset()
 		self.paddle_left.reset()
 		return self.get_state()
 
 	def check_collision_paddle(self, ball, paddle):
-		px, _ = paddle.get_center()
+		bx, by = ball.get_center()
+		px, py = paddle.get_center()
 		px1, py1, px2, py2 = paddle.get_coords()
 		bx1, by1, bx2, by2 = ball.get_coords()
 
 		if bx2 >= px1 and bx1 <= px2 and by2 >= py1 and by1 <= py2:
-			angle = random.uniform(-0.6, 0.6)
+			relative_intersect_y = (by - py) / (paddle.height / 2)
+			relative_intersect_y = max(-1, min(1, relative_intersect_y))
+
+			max_angle = 0.8
+			angle = relative_intersect_y * max_angle
+
 			if px < self.width / 2:
-				ball.dx = 1 - abs(angle)
+				dx_dir = 1
 			else:
-				ball.dx = -(1 - abs(angle))
+				dx_dir = -1
+
+			ball.dx = dx_dir * math.sqrt(1 - angle*angle)
 			ball.dy = angle
-			paddle.hit = False
-			return True
-		return False
+
+			paddle.hit = True
 
 	def check_collision_wall(self, ball):
 		bx, by = ball.get_center()
@@ -202,8 +209,10 @@ class Game:
 		self.move_paddle(self.paddle_right, right_action)
 
 		self.check_collision_wall(self.ball)
-		self.check_collision_paddle(self.ball, self.paddle_left)
-		self.check_collision_paddle(self.ball, self.paddle_right)
+		if self.ball.dx > 0:
+			self.check_collision_paddle(self.ball, self.paddle_right)
+		else:
+			self.check_collision_paddle(self.ball, self.paddle_left)
 
 		if self.winner != 0:
 			return self.get_state(), self.get_reward(), True
