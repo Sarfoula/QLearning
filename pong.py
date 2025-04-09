@@ -1,5 +1,6 @@
 import tkinter as tk
 import math
+import torch as T
 
 class Ball:
 	def __init__(self, visual, canvas, x, y, speed=10, dx=1, dy=0, radius=10, color="white"):
@@ -100,6 +101,7 @@ class Game:
 		self.ballspeed = 10
 		self.canvas = None
 		self.keys_pressed = {}
+		self.visual = visual
 		if visual:
 			self.root = tk.Tk()
 			self.root.title("Jeu Pong")
@@ -142,11 +144,13 @@ class Game:
 			return 2
 
 	def get_state(self):
-		return (self.paddle_left.y/self.height,
+		state = [self.paddle_left.y/self.height,
 				self.ball.x/self.width,
 				self.ball.y/self.height,
 				self.ball.vx/self.ballspeed,
-				self.ball.vy/self.ballspeed)
+				self.ball.vy/self.ballspeed]
+		round_state = [round(val, 2) for val in state]
+		return (T.tensor(round_state, dtype=T.float32))
 
 	def get_reward(self):
 		reward = 0
@@ -176,7 +180,7 @@ class Game:
 			relative_intersect_y = (by - py) / (paddle.height / 2)
 			relative_intersect_y = max(-1, min(1, relative_intersect_y))
 
-			max_angle = 0.8
+			max_angle = 0.9
 			angle = relative_intersect_y * max_angle
 
 			if px < self.width / 2:
@@ -203,10 +207,13 @@ class Game:
 			ball.dx = abs(ball.dx)
 			self.winner = 2
 
-	def step(self, left_action, right_action):
+	def step(self, left_action, right_action=None):
 		self.ball.move()
 		self.move_paddle(self.paddle_left, left_action)
-		self.move_paddle(self.paddle_right, right_action)
+		if right_action is None:
+			self.move_paddle(self.paddle_right, self.opponent(self.paddle_right))
+		else:
+			self.move_paddle(self.paddle_right, right_action)
 
 		self.check_collision_wall(self.ball)
 		if self.ball.dx > 0:

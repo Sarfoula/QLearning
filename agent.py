@@ -125,7 +125,6 @@ class DuelingDeepQNetwork(nn.Module):
 
 class Agent():
 	def __init__(self, input_dim, output_dim, batch_size=64, capacity=500000):
-
 		self.gamma = 0.99
 		self.lr = 0.0003
 		self.tau = 0.005
@@ -141,6 +140,12 @@ class Agent():
 		self.target = DuelingDeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
 		self.target.load_state_dict(self.policy.state_dict())
 		self.target.eval()
+
+	def best_action(self, state):
+		with T.no_grad():
+			tensor = T.tensor(state, dtype=T.float32).unsqueeze(0)
+			action = T.argmax(self.policy.forward(tensor)).item()
+		return action
 
 	def epsilon_decay(self):
 		self.epsilon = max(self.epsilon_min, self.epsilon - self.decay_rate)
