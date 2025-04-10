@@ -178,36 +178,18 @@ class Agent:
 		return pos_xy
 
 	def get_actions(self, state):
-		if len(self.state_history) < self.sequence_len:
-			self.state_history.append(state)
-			if len(self.state_history) < self.sequence_len:
-				paddle_y = state[0]
-				ball_y = state[2]
-				distance = (paddle_y - ball_y).item()
+		actions = [2] * 60
 
-				if distance < 0:
-					action = 1
-				elif distance > 0:
-					action = 0
-				else:
-					action = 2
-
-				actions = [2] * 60
-				max_move = min(int(abs(distance)//10), 60)
-
-				for i in range(max_move):
-					actions[i] = action
-				return actions
-		else:
-			self.state_history.append(state)
+		self.state_history.append(state)
+		if len(self.state_history) > self.sequence_len:
 			self.state_history.pop(0)
+		elif len(self.state_history) >= self.sequence_len:
+			return actions
 
 		state_seq = T.stack(self.state_history).unsqueeze(0)
-
 		paddle_y = state[0]
 		with T.no_grad():
 			prediction = self.agent(state_seq)
-
 		predicted_ball_y = prediction[0, 1].item()
 		distance = (paddle_y - predicted_ball_y)
 
@@ -218,7 +200,6 @@ class Agent:
 		else:
 			action = 2
 
-		actions = [2] * 60
 		max_move = min(int(abs(distance)//10), 60)
 
 		for i in range(max_move):
@@ -244,6 +225,9 @@ class Agent:
 
 		predictions = self.agent(states)
 
+		# print(predictions)
+		# print(target_positions)
+		# print("\n")
 		errors = self.loss(predictions, target_positions)
 		weighted_loss = T.mean(errors * weights.unsqueeze(1))
 

@@ -10,10 +10,9 @@ class PongTrainer(Game):
 		self.delay = delay
 		self.input_dim = 6
 		self.output_dim = 2
-		self.capacity = 500000
-		self.sequence_len = 3
+		self.sequence_len = 5
 
-		self.agent = Agent(self.input_dim, self.output_dim, capacity=self.capacity, sequence_len=self.sequence_len)
+		self.agent = Agent(self.input_dim, self.output_dim, sequence_len=self.sequence_len, batch_size=3)
 
 		self.running = True
 		signal.signal(signal.SIGINT, self.signal_handler)
