@@ -1,86 +1,99 @@
 from pong import Game
-from agent import *
-from utils import show_result
-from time import sleep
+from agent import Agent
+import numpy as np
 import signal
+from time import sleep
 
-class trainGame(Game):
-	def __init__(self, height, width, visual=False):
+class PongTrainer(Game):
+	def __init__(self, height=600, width=800, delay=60, visual=False):
 		super().__init__(height, width, visual)
-
-		self.visual = visual
+		self.delay = delay
+		self.input_dim = 6
+		self.output_dim = 2
 		self.capacity = 500000
-		self.agent = Agent(5, 3, batch_size=64, capacity=self.capacity)
+		self.sequence_len = 3
 
-	def ai(self, state):
-		with T.no_grad():
-			return T.argmax(self.agent.policy.forward(T.tensor(state, dtype=T.float32).unsqueeze(0))).item()
+		self.agent = Agent(self.input_dim, self.output_dim, capacity=self.capacity, sequence_len=self.sequence_len)
 
-	def training(self, num_games=500):
-		flag = 0
-		max_frame = 4000
-		history_reward, history_loss = [], []
-		for i in range(num_games):
-			terminal = False
-			state = self.reset()
-			rewards = 0
-			losses = 0
-			for frame in range(max_frame):
-				left_action = self.agent.choose_action(state)
-				right_action = self.opponent(self.paddle_right)
-				new_state, reward, terminal = self.step(left_action, right_action)
+		self.running = True
+		signal.signal(signal.SIGINT, self.signal_handler)
+		signal.signal(signal.SIGTERM, self.signal_handler)
 
-				self.agent.replay_buffer.store_transition(state, left_action, reward, new_state, terminal)
-				loss = self.agent.learn()
+	def signal_handler(self, sig, frame):
+		self.running = False
 
-				state = new_state
-				rewards += reward
-				if loss is not None:
-					losses += loss
-				if terminal:
-					break
-			self.agent.epsilon_decay()
-			if self.agent.replay_buffer.tree.size == self.capacity and flag == 0:
-				print(f"max capacity reached {i}")
-				flag = i
-			history_loss.append(losses)
-			history_reward.append(rewards)
-			if i % 10 == 0:
-				print(f"Ep {i} /{num_games} Rwrd {np.mean(history_reward):.2f} Eps {self.agent.epsilon:.3f}")
-			if not loop:
+def train(env):
+	for i in range(episode):
+		state = env.reset()
+		env.agent.state_history = []
+
+		for frame in range(max_frame):
+			if frame % delay == 0:
+				actions = env.agent.get_actions(state)
+
+			next_state, done = env.step(actions[frame % delay])
+
+			if (frame + 1) % delay == 0:
+				env.agent.store_transition(state, next_state)
+				state = next_state
+
+			loss = env.agent.learn()
+			if loss is not None:
+				total_loss.append(loss)
+
+			if env.visual:
+				env.root.update()
+
+			if done:
 				break
 
-		return history_reward, history_loss, str(i), flag
+		if env.running == False:
+			env.running = True
+			break
 
-	def play(self):
-		self.agent.policy.eval()
-		while (1):
-			action1 = self.ai(self.get_state())
-			action2 = self.get_key_action()
-			_, reward, done = self.step(action1, action2)
+		total_hit.append(env.paddle_left.hit)
 
-			if reward:
-				print(reward)
-			if done:
-				self.reset()
-			self.root.update_idletasks()
-			self.root.update()
-			sleep(0.017)
+		if i % 10 == 0:
+			print(f"Ep {i}, Loss {np.mean(total_loss[-10:]):.6f}, hits {np.mean(total_hit[-10:]):.2f}")
+
+	env.agent.save_model("LSTM_DELAY60.pt")
+
+def play(env):
+	env.agent.state_history = []
+	state = env.reset()
+	frame = 0
+
+	while(1):
+		if frame % delay == 0:
+			actions = env.agent.get_actions(state)
+
+		action2 = env.get_key_action()
+
+		next_state, done = env.step(actions[frame % delay], action2)
+		state = next_state
+		frame += 1
+
+		if done:
+			env.reset()
+			env.agent.state_history = []
+			frame = 0
+
+		if env.visual:
+			env.root.update()
+		sleep(0.017)
 
 if __name__ == "__main__":
-	loop = True
-	def stop(sig, frame):
-		global loop
-		loop = False
-	signal.signal(signal.SIGINT, stop)
-	signal.signal(signal.SIGTERM, stop)
+	visual = False
+	delay = 60
+	episode = 2000
+	total_loss = []
+	total_hit = []
+	max_frame = 4000
 
-	name = "LongTraining"
-	episodes = 5000
+	env = PongTrainer(600, 800, delay, visual)
+	train(env)
+	env.agent.save_model("LSTM_DELAY60.pt")
 
-	game = trainGame(600, 800, visual=True)
-	game.agent.load_model("models/LongTraining834.pt")
-	game.play()
-	# score, loss, episode, flag = game.training(episodes)
-	# show_result(score, loss, name)
-	# game.agent.save_model("models/" + name + episode + ".pt")
+	# env.visual = True
+	# env.agent.save_model("LSTM_DELAY60.pt")
+	# play(env)

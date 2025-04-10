@@ -1,5 +1,7 @@
 import tkinter as tk
 import math
+import torch as T
+import random
 
 class Ball:
 	def __init__(self, visual, canvas, x, y, speed=10, dx=1, dy=0, radius=10, color="white"):
@@ -45,7 +47,7 @@ class Paddle:
 	def __init__(self, visual, canvas, x, y, color, width=10, height=100):
 		self.x = x
 		self.y = y
-		self.hit = False
+		self.hit = 0
 		self.start = [x, y]
 		self.width = width
 		self.height = height
@@ -77,7 +79,7 @@ class Paddle:
 		self.canvas.move(self.paddle, dx, dy)
 
 	def reset(self):
-		self.hit = False
+		self.hit = 0
 		self.y = self.start[1]
 		if self.visual:
 			self.canvas.coords(self.paddle, self.x - self.width/2, self.y - self.height/2, self.x + self.width/2, self.y + self.height/2)
@@ -100,6 +102,7 @@ class Game:
 		self.ballspeed = 10
 		self.canvas = None
 		self.keys_pressed = {}
+		self.visual = visual
 		if visual:
 			self.root = tk.Tk()
 			self.root.title("Jeu Pong")
@@ -108,7 +111,7 @@ class Game:
 			self.root.bind("<KeyPress>", self.key_press)
 			self.root.bind("<KeyRelease>", self.key_release)
 
-		self.ball = Ball(visual, self.canvas, x=width/2, y=height/2, dx=1, dy=0, speed=self.ballspeed, radius=10, color="white")
+		self.ball = Ball(visual, self.canvas, x=width/2, y=height/2, dx=0.9, dy=0.1, speed=self.ballspeed, radius=10, color="white")
 		self.paddle_left = Paddle(visual, self.canvas, 50, height/2, width=10, height=100, color="red")
 		self.paddle_right = Paddle(visual, self.canvas, width - 50, height/2, width=10, height=100, color="blue")
 
@@ -132,32 +135,25 @@ class Game:
 			paddle.move_down()
 
 	def opponent(self, paddle):
-		if self.ball.dx < 0:
+		if self.ball.dx < 0 and paddle.x > self.width/2 or self.ball.dx > 0 and paddle.x < self.width/2:
 			return 2
-		if self.ball.y < paddle.y:
+		limit = random.randint(0, 50)
+		if self.ball.y < paddle.y - limit:
 			return 0
-		elif self.ball.y > paddle.y:
+		elif self.ball.y > paddle.y + limit:
 			return 1
 		else:
 			return 2
 
 	def get_state(self):
-		return (self.paddle_left.y/self.height,
-				self.ball.x/self.width,
-				self.ball.y/self.height,
-				self.ball.vx/self.ballspeed,
-				self.ball.vy/self.ballspeed)
-
-	def get_reward(self):
-		reward = 0
-		if self.paddle_left.hit:
-			self.paddle_left.hit = False
-			reward += 1.0
-
-		if self.winner == 2:
-			reward = -1.0
-
-		return reward
+		state = [self.paddle_left.y,
+				self.ball.x,
+				self.ball.y,
+				self.ball.vx,
+				self.ball.vy,
+				self.ballspeed]
+		round_state = [round(val, 2) for val in state]
+		return (T.tensor(round_state, dtype=T.float32))
 
 	def reset(self):
 		self.winner = 0
@@ -176,7 +172,7 @@ class Game:
 			relative_intersect_y = (by - py) / (paddle.height / 2)
 			relative_intersect_y = max(-1, min(1, relative_intersect_y))
 
-			max_angle = 0.8
+			max_angle = 0.9
 			angle = relative_intersect_y * max_angle
 
 			if px < self.width / 2:
@@ -187,7 +183,7 @@ class Game:
 			ball.dx = dx_dir * math.sqrt(1 - angle*angle)
 			ball.dy = angle
 
-			paddle.hit = True
+			paddle.hit += 1
 
 	def check_collision_wall(self, ball):
 		bx, by = ball.get_center()
@@ -203,10 +199,13 @@ class Game:
 			ball.dx = abs(ball.dx)
 			self.winner = 2
 
-	def step(self, left_action, right_action):
+	def step(self, left_action, right_action=None):
 		self.ball.move()
 		self.move_paddle(self.paddle_left, left_action)
-		self.move_paddle(self.paddle_right, right_action)
+		if right_action is None:
+			self.move_paddle(self.paddle_right, self.opponent(self.paddle_right))
+		else:
+			self.move_paddle(self.paddle_right, right_action)
 
 		self.check_collision_wall(self.ball)
 		if self.ball.dx > 0:
@@ -215,5 +214,5 @@ class Game:
 			self.check_collision_paddle(self.ball, self.paddle_left)
 
 		if self.winner != 0:
-			return self.get_state(), self.get_reward(), True
-		return self.get_state(), self.get_reward(), False
+			return self.get_state(), True
+		return self.get_state(), False

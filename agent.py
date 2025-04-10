@@ -1,7 +1,6 @@
 import torch as T
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.utils as utils
 import torch.nn.functional as F
 import numpy as np
 import random
@@ -49,149 +48,211 @@ class SumTree:
 		return self.tree[0]
 
 class ReplayBuffer:
-	def __init__(self, buffer_size, batch_size, alpha, beta, beta_inc):
-		self.tree = SumTree(buffer_size)
-		self.buffer_size = buffer_size
+	def __init__(self, capacity, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001):
+		self.tree = SumTree(capacity)
 		self.batch_size = batch_size
 		self.alpha = alpha
 		self.beta = beta
-		self.bet_incr = beta_inc
+		self.beta_inc = beta_inc
 		self.max_priority = 1.0
 		self.epsilon = 1e-5
 
-	def store_transition(self, state, action, reward, next_state, done):
+	def store_transition(self, state_seq, next_state):
+		"""Store a transition (state_seq, next_state) with max priority"""
 		priority = self.max_priority
-		self.tree.add(priority, (state, action, reward, next_state, done))
+		self.tree.add(priority, (state_seq, next_state))
 
 	def sample(self):
-		batch_indices, batch_transitions, batch_weigths = [], [], []
+		batch_indices, batch_states, batch_next_states, batch_weights = [], [], [], []
 
-		segment = self.tree.total_priority() / self.batch_size
-		self.beta = min(1.0, self.beta + self.bet_incr)
+		total_priority = self.tree.total_priority()
+		if total_priority == 0:
+			return None
+
+		segment = total_priority / self.batch_size
+		self.beta = min(1.0, self.beta + self.beta_inc)
 
 		for i in range(self.batch_size):
 			a, b = segment * i, segment * (i + 1)
 			s = random.uniform(a, b)
-			idx, p, data = self.tree.sample(s)
 
-			prob = p / self.tree.total_priority()
+			idx, priority, data = self.tree.sample(s)
+
+			prob = priority / total_priority
 			weight = (prob * self.tree.size) ** -self.beta
 
 			batch_indices.append(idx)
-			batch_transitions.append(data)
-			batch_weigths.append(weight)
+			state_seq, next_state = data
+			batch_states.append(state_seq)
+			batch_next_states.append(next_state)
+			batch_weights.append(weight)
 
-		batch_weigths = np.array(batch_weigths) / np.max(batch_weigths)
+		batch_weights = np.array(batch_weights) / np.max(batch_weights)
 
-		states, actions, rewards, next_states, dones = zip(*batch_transitions)
+		states = T.stack(batch_states)
+		next_states = T.stack(batch_next_states)
+		weights = T.tensor(batch_weights, dtype=T.float32)
 
-		states = T.tensor(np.array(states), dtype=T.float32)
-		next_states = T.tensor(np.array(next_states), dtype=T.float32)
-		actions = T.tensor(actions, dtype=T.long).unsqueeze(1)
-		rewards = T.tensor(rewards, dtype=T.float32)
-		dones = T.tensor(dones, dtype=T.float32)
-		weights = T.tensor(batch_weigths, dtype=T.float32)
-
-		return states, actions, rewards, next_states, dones, batch_indices, weights
+		return states, next_states, batch_indices, weights
 
 	def update_priorities(self, batch_indices, batch_priorities):
+		"""Update priorities of sampled transitions"""
 		for idx, priority in zip(batch_indices, batch_priorities):
 			priority = (abs(priority) + self.epsilon) ** self.alpha
 			self.tree.update(idx, priority)
 			self.max_priority = max(self.max_priority, priority)
 
-class DuelingDeepQNetwork(nn.Module):
-	def __init__(self, input_dim, output_dim, lr, fc1_dims=64, fc2_dims=64):
+class Network(nn.Module):
+	def __init__(self, sequence_len, input_dim, output_dim, lr, hidden_size=64, num_layers=2):
 		super().__init__()
-		self.fc1 = nn.Linear(input_dim, fc1_dims)
-		self.fc2 = nn.Linear(fc1_dims, fc2_dims)
+		self.sequence_len = sequence_len
+		self.input_dim = input_dim
+		self.hidden_size = hidden_size
+		self.num_layers = num_layers
 
-		self.value_stream = nn.Linear(fc2_dims, 1)
+		self.lstm = nn.LSTM(
+			input_size=input_dim,
+			hidden_size=hidden_size,
+			num_layers=num_layers,
+			batch_first=True
+		)
 
-		self.advantage_stream = nn.Linear(fc2_dims, output_dim)
+		self.fc1 = nn.Linear(hidden_size, 64)
+		self.fc2 = nn.Linear(64, output_dim)
 
-		self.loss = nn.SmoothL1Loss(reduction='none')
-		self.optimizer = optim.Adam(self.parameters(), lr=lr)
+	def forward(self, x):
+		if len(x.shape) == 1:
+			x = x.unsqueeze(0).unsqueeze(0)
+			x = x.repeat(1, self.sequence_len, 1)
+		elif len(x.shape) == 2 and x.shape[0] > 1:
+			batch_size = x.shape[0]
+			x = x.unsqueeze(1)
+			x = x.repeat(1, self.sequence_len, 1)
 
-	def forward(self, state):
-		x = F.relu(self.fc1(state))
-		x = F.relu(self.fc2(x))
+		lstm_out, _ = self.lstm(x)
 
-		value = self.value_stream(x)
-		advantages = self.advantage_stream(x)
+		lstm_out = lstm_out[:, -1, :]
 
-		q_values = value + (advantages - advantages.mean(dim=1, keepdim=True))
-		return q_values
+		x = F.relu(self.fc1(lstm_out))
+		x = self.fc2(x)
 
-class Agent():
-	def __init__(self, input_dim, output_dim, batch_size=64, capacity=500000):
+		return x
 
-		self.gamma = 0.99
-		self.lr = 0.0003
-		self.tau = 0.005
-		self.step_counter = 0
+class Agent:
+	def __init__(self, input_dim, output_dim, batch_size=64, hidden_dim=64, sequence_len=60, capacity=500000):
+		self.input_dim = input_dim
+		self.output_dim = output_dim
+		self.batch_size = batch_size
+		self.sequence_len = sequence_len
 
-		self.epsilon = 1.0
-		self.epsilon_min = 0.1
-		self.epsilon_decay_episode = 300
-		self.decay_rate = (self.epsilon - self.epsilon_min) / self.epsilon_decay_episode
+		self.agent = Network(sequence_len, input_dim, output_dim, lr=0.001, hidden_size=hidden_dim, num_layers=2)
+		self.optim = optim.Adam(self.agent.parameters(), lr=0.001)
+		self.loss = nn.MSELoss(reduction='none')
 
-		self.replay_buffer = ReplayBuffer(capacity, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
-		self.policy = DuelingDeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
-		self.target = DuelingDeepQNetwork(input_dim, output_dim, self.lr, fc1_dims=64, fc2_dims=64)
-		self.target.load_state_dict(self.policy.state_dict())
-		self.target.eval()
+		self.buffer = ReplayBuffer(capacity, batch_size, alpha=0.6, beta=0.4, beta_inc=0.001)
 
-	def epsilon_decay(self):
-		self.epsilon = max(self.epsilon_min, self.epsilon - self.decay_rate)
+		self.state_history = []
 
-	def choose_action(self, state):
-		if random.random() < self.epsilon:
-			action = random.randint(0, 2)
+	def save_model(self, path="save.pt"):
+		T.save({'model_state_dict': self.agent.state_dict(),
+		  'optimizer_state_dict': self.optim.state_dict()}, path)
+
+	def load_model(self, path="save.pt"):
+		file = T.load(path)
+		self.agent.load_state_dict(file['model_state_dict'])
+		self.optim.load_state_dict(file['optimizer_state_dict'])
+		self.agent.eval()
+
+	def store_transition(self, state, next_state):
+		self.state_history.append(state)
+
+		if len(self.state_history) > self.sequence_len:
+			self.state_history.pop(0)
+
+		if len(self.state_history) == self.sequence_len:
+			state_seq = T.stack(self.state_history)
+			self.buffer.store_transition(state_seq, next_state)
+
+	def extract_position(self, state):
+		pos_xy = state[1:3]
+		return pos_xy
+
+	def get_actions(self, state):
+		if len(self.state_history) < self.sequence_len:
+			self.state_history.append(state)
+			if len(self.state_history) < self.sequence_len:
+				paddle_y = state[0]
+				ball_y = state[2]
+				distance = (paddle_y - ball_y).item()
+
+				if distance < 0:
+					action = 1
+				elif distance > 0:
+					action = 0
+				else:
+					action = 2
+
+				actions = [2] * 60
+				max_move = min(int(abs(distance)//10), 60)
+
+				for i in range(max_move):
+					actions[i] = action
+				return actions
 		else:
-			with T.no_grad():
-				tensor = T.tensor(state, dtype=T.float32).unsqueeze(0)
-				action = T.argmax(self.policy.forward(tensor)).item()
-		return action
+			self.state_history.append(state)
+			self.state_history.pop(0)
+
+		state_seq = T.stack(self.state_history).unsqueeze(0)
+
+		paddle_y = state[0]
+		with T.no_grad():
+			prediction = self.agent(state_seq)
+
+		predicted_ball_y = prediction[0, 1].item()
+		distance = (paddle_y - predicted_ball_y)
+
+		if distance < 0:
+			action = 1
+		elif distance > 0:
+			action = 0
+		else:
+			action = 2
+
+		actions = [2] * 60
+		max_move = min(int(abs(distance)//10), 60)
+
+		for i in range(max_move):
+			actions[i] = action
+
+		return actions
 
 	def learn(self):
-		if self.replay_buffer.tree.size < self.replay_buffer.batch_size:
-			return
+		if self.buffer.tree.size < self.batch_size:
+			return None
 
-		states, actions, rewards, new_states, terminals, batch_indices, weights = self.replay_buffer.sample()
+		batch = self.buffer.sample()
+		if batch is None:
+			return None
 
-		q_values = self.policy(states)
-		q_value = q_values.gather(1, actions).squeeze(1)
+		states, next_states, indices, weights = batch
+
+		next_positions = []
+		for state in next_states:
+			next_positions.append(self.extract_position(state))
+
+		target_positions = T.stack(next_positions)
+
+		predictions = self.agent(states)
+
+		errors = self.loss(predictions, target_positions)
+		weighted_loss = T.mean(errors * weights.unsqueeze(1))
+
+		self.optim.zero_grad()
+		weighted_loss.backward()
+		self.optim.step()
 
 		with T.no_grad():
-			next_max_action = self.policy(new_states).argmax(1, keepdim=True)
-			max_next_q_value = self.target(new_states).gather(1, next_max_action).squeeze(1)
-			q_target = rewards + self.gamma * max_next_q_value * (1 - terminals)
+			priorities = errors.sum(dim=1).detach().cpu().numpy()
+			self.buffer.update_priorities(indices, priorities)
 
-		loss = (self.policy.loss(q_value, q_target) * weights).mean()
-
-		td_errors = T.abs(q_value - q_target).detach().numpy()
-		self.replay_buffer.update_priorities(batch_indices, td_errors)
-
-		self.policy.optimizer.zero_grad()
-		loss.backward()
-		utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
-		self.policy.optimizer.step()
-
-		self.step_counter += 1
-		for target_param, policy_param in zip(self.target.parameters(), self.policy.parameters()):
-			target_param.data.copy_(self.tau * policy_param.data + (1.0 - self.tau) * target_param.data)
-		return loss.item()
-
-	def save_model(self, path):
-		T.save({'model_state_dict': self.policy.state_dict(),
-			'target_state_dict': self.target.state_dict(),
-			'optimizer_state_dict': self.policy.optimizer.state_dict(),
-			'epsilon': self.epsilon}, path)
-
-	def load_model(self, path):
-		checkpoint = T.load(path, weights_only=False)
-		self.policy.load_state_dict(checkpoint['model_state_dict'])
-		self.target.load_state_dict(checkpoint['target_state_dict'])
-		self.policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-		self.epsilon = checkpoint['epsilon']
+		return weighted_loss.item()
