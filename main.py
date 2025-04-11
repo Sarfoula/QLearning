@@ -67,13 +67,13 @@ class PrioritizedReplayBuffer:
 		self.max_priority = 1.0
 		self.last_indices = None
 
-	def store(self, state, target):
+	def store(self, state_sequence, target):
 		priority = self.max_priority
-		if isinstance(state, T.Tensor):
-			state = state.detach().cpu().numpy()
+		if isinstance(state_sequence, T.Tensor):
+			state_sequence = state_sequence.detach().cpu().numpy()
 		if isinstance(target, T.Tensor):
 			target = target.detach().cpu().numpy()
-		self.tree.add(priority, (state, target))
+		self.tree.add(priority, (state_sequence, target))
 
 	def sample(self):
 		if len(self.tree) < self.batch_size:
@@ -101,8 +101,8 @@ class PrioritizedReplayBuffer:
 			weight = (sampling_probability * len(self.tree)) ** -self.beta
 
 			batch_indices.append(idx)
-			state, target = data
-			batch_states.append(T.tensor(state, dtype=T.float32))
+			state_sequence, target = data
+			batch_states.append(T.tensor(state_sequence, dtype=T.float32))
 			batch_targets.append(T.tensor(target, dtype=T.float32))
 			batch_weights.append(weight)
 
@@ -133,50 +133,72 @@ class PrioritizedReplayBuffer:
 	def __len__(self):
 		return len(self.tree)
 
-class Network(nn.Module):
-	def __init__(self, input_dim, output_dim, fc1_dims=64, fc2_dims=64):
+class LSTM(nn.Module):
+	def __init__(self, input_dim, hidden_dim, output_dim, num_layers=1):
 		super().__init__()
-		self.network = nn.Sequential(
-		nn.Linear(input_dim, fc1_dims),
-		nn.ReLU(),
-		nn.Linear(fc1_dims, fc2_dims),
-		nn.ReLU(),
-		nn.Linear(fc2_dims, output_dim))
+		self.hidden_dim = hidden_dim
+		self.num_layers = num_layers
 
-	def forward(self, state):
-		return self.network(state)
+		self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+
+		self.fc = nn.Linear(hidden_dim, output_dim)
+
+	def forward(self, x):
+		batch_size = x.size(0)
+
+		h0 = T.zeros(self.num_layers, batch_size, self.hidden_dim).to(x.device)
+		c0 = T.zeros(self.num_layers, batch_size, self.hidden_dim).to(x.device)
+
+		lstm_out, _ = self.lstm(x, (h0, c0))
+
+		output = self.fc(lstm_out[:, -1, :])
+
+		return output
 
 class PongAI:
-	def __init__(self):
-		self.predictor = Network(7, 1)
+	def __init__(self, seq_length=10):
+		self.seq_length = seq_length
+		self.input_dim = 7
+		self.hidden_dim = 64
+		self.output_dim = 1
+
+		self.predictor = LSTM(self.input_dim, self.hidden_dim, self.output_dim)
 		self.batch_size = 64
 
 		self.actions = []
+		self.state_history = []
 		self.paddle_speed = 10
 		self.buffer = PrioritizedReplayBuffer(10000, self.batch_size)
 
-		self.sequence = []
 		self.loss = nn.HuberLoss(reduction='none')
 		self.optimizer = optim.Adam(self.predictor.parameters(), lr=0.0003)
 
-	def save_model(self, path="save.pt"):
+	def save_model(self, path="lstm_model.pt"):
 		T.save({'model_state_dict': self.predictor.state_dict(),
-		  'optim_state_dict': self.optimizer.state_dict()}, path)
+			   'optim_state_dict': self.optimizer.state_dict()}, path)
 
-	def load_model(self, path="save.pt"):
+	def load_model(self, path="lstm_model.pt"):
 		file = T.load(path)
 		self.predictor.load_state_dict(file['model_state_dict'])
 		self.optimizer.load_state_dict(file['optim_state_dict'])
 		self.predictor.eval()
 
-	def store_transition(self):
-		target = self.sequence[-1][3]
-		for state in self.sequence:
-			self.buffer.store(state, target)
-		self.sequence = []
+	def store_state(self, state, frame, delay, hit=False):
+		if state[4] > 0 and frame % delay == 0:
+			self.state_history.append(state)
+			if len(self.state_history) > self.seq_length:
+				self.state_history.pop(0)
 
-	def store_sequence(self, state):
-		self.sequence.append(state)
+		if hit:
+			target = state[3]
+			while len(self.state_history) < self.seq_length:
+				if len(self.state_history) > 0:
+					self.state_history.append(self.state_history[-1])
+				else:
+					self.state_history.append(state)
+
+			self.buffer.store(np.array(self.state_history), target)
+			self.state_history = []
 
 	def learn(self):
 		if len(self.buffer) < self.batch_size:
@@ -187,41 +209,57 @@ class PongAI:
 			return None
 
 		states, targets, weights = result
+
 		predictions = self.predictor(states)
-
 		with T.no_grad():
-			td_errors = T.abs(predictions - targets).squeeze().cpu().numpy()
+			td_errors = T.abs(predictions - targets).squeeze().numpy()
 
-		elementwise_loss = self.loss(predictions, targets)
-		loss = (elementwise_loss * weights.unsqueeze(1)).mean()
+		loss = self.loss(predictions, targets)
+		weighted_loss = (loss * weights.unsqueeze(1)).mean()
 
 		self.optimizer.zero_grad()
-		loss.backward()
+		weighted_loss.backward()
 		self.optimizer.step()
 		self.buffer.update_priorities(td_errors)
+		return weighted_loss.item()
 
-		return loss.item()
+	def predict_y(self, current_state):
+		if len(self.state_history) < self.seq_length:
+			padded_history = self.state_history.copy()
 
-	def predict_y(self, state):
+			if len(padded_history) > 0:
+				last_state = padded_history[-1]
+				while len(padded_history) < self.seq_length:
+					padded_history.append(last_state)
+			else:
+				padded_history = [current_state] * self.seq_length
+
+			states = T.tensor(np.array([padded_history]), dtype=T.float32)
+		else:
+			states = T.tensor(np.array([self.state_history]), dtype=T.float32)
+
 		with T.no_grad():
-			prediction = self.predictor(T.tensor(state, dtype=T.float32)).item()
+			prediction = self.predictor(states).item()
+
 		return prediction
 
 	def train(self, epoch):
 		delay = 60
 		state = game.reset()
-		last_direction = state[4]
+		last_collision = 0
 		losses = []
 		distance = []
 
+		self.state_history = []
+
 		for frame in range(epoch):
-			if frame % delay == 0:
+			self.store_state(state, frame, delay)
+
+			if frame > 0 and game.paddle_right.hit > last_collision:
+				self.store_state(state, frame, delay, hit=True)
+				last_collision = game.paddle_right.hit
+
 				predict = self.predict_y(state)
-			if state[4] * last_direction > 0 and game.paddle_left.x + 5 < state[2] < game.paddle_right.x - 5:
-				self.store_sequence(state)
-			else:
-				self.store_transition()
-				last_direction = state[4]
 				distance.append(abs(predict - state[3]))
 
 			limit = None
@@ -233,13 +271,16 @@ class PongAI:
 			if loss is not None:
 				losses.append(loss)
 
-			if frame % 100 == 0 and loss:
-				print(f"{frame}, loss {np.mean(losses[-10:]):.3f}, distance {np.mean(distance[-10:]):.0f}")
+			if frame % 1000 == 0:
+				avg_loss = np.mean(losses[-10:]) if losses else 0
+				avg_dist = np.mean(distance[-10:]) if distance else 0
+				print(f"frame {frame}, loss {avg_loss:.3f}, dist {avg_dist:.0f}, batch {len(self.buffer)}")
 
 			if done:
-				print("				LOSSETETETETTE")
+				print("SOMEONE LOST			")
 				state = game.reset()
-				last_direction = state[4]
+				self.state_history = []
+
 			if game.visual:
 				game.root.update()
 
@@ -250,11 +291,13 @@ class PongAI:
 			action = 1
 		elif distance > 0:
 			action = 0
+		else:
+			action = 2
 
-		distance = abs(distance) // self.paddle_speed
+		steps = abs(distance) // self.paddle_speed
 
 		self.actions = []
-		for i in range(int(distance)):
+		for i in range(int(steps)):
 			self.actions.append(action)
 
 	def get_action(self):
@@ -267,36 +310,45 @@ class PongAI:
 		frame = 0
 		delay = 60
 		state = game.reset()
+		self.state_history = []
 
-		while(1):
+		while True:
+			self.store_state(state, frame, delay)
+
 			if frame % delay == 0:
 				if state[4] > 0:
 					predict = self.predict_y(state)
 					self.update(state[1], predict)
-					game.prediction.tp(game.paddle_right.x, predict)
+
+					if game.visual:
+						game.prediction.tp(game.paddle_right.x, predict)
+						print(f"ball: {state[3]:.1f}, predict: {predict:.1f}")
 
 			action1 = game.get_key_action()
-
 			action2 = self.get_action()
+
 			state, done = game.step(action1, action2)
 			frame += 1
 
 			if done:
 				state = game.reset()
 				frame = 0
+				self.state_history = []
+
 			if game.visual:
 				game.root.update()
-			time.sleep(0.017)
 
+			time.sleep(0.017)
 
 if __name__ == "__main__":
 	from pong import Game
 
-	game = Game(height=600, width=800, visual=False)
-	ai = PongAI()
+	game = Game(height=600, width=800, visual=True)
 
-	ai.train(100000)
-	ai.save_model()
+	ai = PongAI(5)
 
-	ai.load_model()
-	ai.test()
+	ai.train(10000)
+	ai.save_model("lstm_pong_model.pt")
+
+	# ai.load_model("lstm_pong_model.pt")
+	# ai.test()

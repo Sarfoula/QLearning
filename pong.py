@@ -183,7 +183,7 @@ class Game:
 			relative_intersect_y = (by - py) / (paddle.height / 2)
 			relative_intersect_y = max(-1, min(1, relative_intersect_y))
 
-			max_angle = 0.95
+			max_angle = 0.9
 			angle = relative_intersect_y * max_angle
 
 			if px < self.width / 2:
